@@ -1061,9 +1061,22 @@ def make_sensitivity_from_model(base_inputs, rf, erp, base_wacc, base_g):
     wacc_grid = np.clip(wacc_grid, 0.04, 0.20)
     g_grid = np.clip(g_grid, -0.01, 0.06)
 
-    table = pd.DataFrame(index=[f"{w*100:.2f}%" for w in wacc_grid],
-                         columns=[f"{gg*100:.2f}%" for gg in g_grid])
-    vals = np.zeros((5, 5), dtype=float)
+    wacc_labels = [f"{w*100:.2f}%" for w in wacc_grid]
+
+    g_labels_raw = [f"{gg*100:.2f}%" for gg in g_grid]
+    # Make labels unique (Streamlit/PyArrow requires unique column names)
+    seen = {}
+    g_labels = []
+    for lab in g_labels_raw:
+        if lab not in seen:
+            seen[lab] = 0
+            g_labels.append(lab)
+        else:
+            seen[lab] += 1
+            g_labels.append(f"{lab} ({seen[lab]})")
+    
+    table = pd.DataFrame(index=wacc_labels, columns=g_labels)
+    vals = np.zeros((len(wacc_grid), len(g_grid)), dtype=float)
 
     for i, w in enumerate(wacc_grid):
         for j, gg in enumerate(g_grid):
