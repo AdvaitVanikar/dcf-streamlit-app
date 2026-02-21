@@ -1263,6 +1263,24 @@ def handle_report(ticker, user_inputs=None):
     else:
         wD_user = None
 
+    # tax_rate override
+    utax = _clean_float(user_inputs.get("tax_rate"))
+    if utax is not None:
+        base_inputs["tax_rate"] = float(utax)
+        print("UserInput: tax_rate=%s" % str(base_inputs["tax_rate"]))
+
+    # rev_growth override
+    urevg = _clean_float(user_inputs.get("rev_growth"))
+    if urevg is not None:
+        base_inputs["rev_growth"] = float(urevg)
+        print("UserInput: rev_growth=%s" % str(base_inputs["rev_growth"]))
+
+    # ebit_margin override
+    uebm = _clean_float(user_inputs.get("ebit_margin"))
+    if uebm is not None:
+        base_inputs["ebit_margin"] = float(uebm)
+        print("UserInput: ebit_margin=%s" % str(base_inputs["ebit_margin"]))
+
     # -----------------------------
     # WACC (computed using USED inputs)
     # -----------------------------
@@ -1438,6 +1456,76 @@ def handle_report(ticker, user_inputs=None):
         print("- %s" % line)
 
     # -----------------------------
+    # Build assumptions summary for Streamlit display
+    # -----------------------------
+    def _src(user_val, yahoo_val, default_val, is_yahoo_available):
+        """Determine source: User Input > Yahoo > Default"""
+        if user_val is not None:
+            return "User Input"
+        if is_yahoo_available:
+            return "Yahoo Finance"
+        return "Default"
+
+    assumptions = [
+        {
+            "Assumption": "Risk-free rate (rf)",
+            "Value": fmt_pct(rf, 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("rf")) is not None else ("Yahoo Finance (^TNX)" if ok_rf and tnx is not None else "Default"),
+        },
+        {
+            "Assumption": "Equity Risk Premium (ERP)",
+            "Value": fmt_pct(erp, 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("erp")) is not None else ("Damodaran (web)" if cached is None or True else "Default"),
+        },
+        {
+            "Assumption": "Beta",
+            "Value": fmt_num(base_inputs["beta"], 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("beta")) is not None else ("Yahoo Finance" if base_inputs.get("info", {}).get("beta") is not None else "Default"),
+        },
+        {
+            "Assumption": "Cost of Debt",
+            "Value": fmt_pct(cost_debt_val, 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("cost_debt")) is not None else ("Yahoo Finance (IS/BS)" if base_inputs.get("cost_debt", 0.045) != 0.045 else "Default"),
+        },
+        {
+            "Assumption": "Cost of Equity",
+            "Value": fmt_pct(cost_equity_val, 2),
+            "Source": "User Input" if ucoe is not None else "Computed (CAPM)",
+        },
+        {
+            "Assumption": "Debt Weight (wD)",
+            "Value": fmt_pct(wD_val, 2),
+            "Source": "User Input" if wD_user is not None else ("Yahoo Finance (market cap + debt)" if float(base_inputs.get("market_cap", 0)) > 0 else "Default"),
+        },
+        {
+            "Assumption": "WACC",
+            "Value": fmt_pct(base_wacc, 2),
+            "Source": "Computed",
+        },
+        {
+            "Assumption": "Terminal Growth (g)",
+            "Value": fmt_pct(base_g, 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("terminal_g")) is not None else "Default",
+        },
+        {
+            "Assumption": "Revenue Growth",
+            "Value": fmt_pct(base_inputs["rev_growth"], 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("rev_growth")) is not None else ("Yahoo Finance (historical avg)" if base_inputs["rev_growth"] != default_revenue_growth else "Default"),
+        },
+        {
+            "Assumption": "EBIT Margin",
+            "Value": fmt_pct(base_inputs["ebit_margin"], 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("ebit_margin")) is not None else ("Yahoo Finance (IS)" if base_inputs["ebit_margin"] != default_ebitda_margin else "Default"),
+        },
+        {
+            "Assumption": "Tax Rate",
+            "Value": fmt_pct(base_inputs["tax_rate"], 2),
+            "Source": "User Input" if _clean_float(user_inputs.get("tax_rate")) is not None else ("Yahoo Finance (IS)" if base_inputs["tax_rate"] != default_tax_rate else "Default"),
+        },
+    ]
+    assumptions_df = pd.DataFrame(assumptions)
+
+    # -----------------------------
     # RETURN for Streamlit
     # -----------------------------
     return {
@@ -1453,6 +1541,7 @@ def handle_report(ticker, user_inputs=None):
         "revenue_fig": revenue_fig,
         "px": px,
         "vps": vps,
+        "assumptions_df": assumptions_df,
     }
 # -----------------------------
 # Command parsing / main
