@@ -605,11 +605,20 @@ def compute_base_inputs(ticker):
     except Exception:
         pass
 
+    # Derive base fiscal year from the latest statement column date
+    base_year = None
+    try:
+        if latest_col is not None:
+            base_year = int(pd.to_datetime(latest_col).year)
+    except Exception:
+        base_year = None
+
     return {
         "info": info,
         "is_3": is_3,
         "bs_3": bs_3,
         "cf_3": cf_3,
+        "base_year": base_year,
         "revenue": revenue,
         "ebit": ebit,
         "net_income": net_income,
@@ -667,15 +676,18 @@ def compute_wacc(base_inputs, rf, erp):
 # -----------------------------
 def build_forecast(base_inputs, horizon_years=5):
     """
-    Correct forecast architecture:
-    - Year 0 = last actuals (base): revenue, PPE, NWC all taken from historical data.
-    - Years 1..N = forecast years: revenue grows from prior year; D&A is driven by
-      beginning-of-year PPE (not flat % of current revenue) so the asset base
-      compounds correctly; CapEx as % of revenue drives PPE; NWC is a level ratio
-      of revenue derived from the balance sheet, with delta hitting FCF.
-    - The opening cash (Year 0) is preserved separately for use in the DCF bridge.
-      Forecast cash accumulates FCF but is NOT used in the equity bridge (opening
-      cash is the correct bridge input, consistent with standard DCF convention).
+    Forecast architecture:
+    - Year 0 = last actuals (base year from financial statements).
+    - Years 1..N labeled with actual calendar years (base_year + 1, +2, ...).
+    - D&A driven by beginning-of-year PPE via a depreciation rate derived from actuals,
+      so the asset base compounds correctly rather than being a flat % of revenue.
+    - Capital structure: target D/(D+E) ratio is held constant. Each year, after
+      computing unlevered FCF, net debt is adjusted toward the target leverage so
+      that debt grows/shrinks with the asset base rather than staying frozen while
+      cash explodes. Excess FCF beyond debt service is treated as distributed to
+      equity (dividend / buyback) — consistent with standard DCF where unlevered
+      FCF is distributed to all capital providers and the bridge uses opening balances.
+    - DCF bridge uses OPENING cash and debt (last actuals), not forecast-year balances.
     """
     rev0 = base_inputs["revenue"]
     if rev0 is None or not np.isfinite(rev0) or float(rev0) <= 0:
@@ -686,78 +698,99 @@ def build_forecast(base_inputs, horizon_years=5):
     rev_growth  = float(base_inputs["rev_growth"])
     ebit_margin = float(base_inputs["ebit_margin"])
     tax_rate    = float(base_inputs["tax_rate"])
-    # da_pct is stored as D&A / revenue from actuals; we use it as a ratio of
-    # beginning PPE to get a depreciation rate, then apply that rate to the
-    # rolling PPE balance so the asset base compounds properly.
     da_rev_pct  = float(base_inputs["da_pct"])     # D&A / revenue (from actuals)
     capex_pct   = float(base_inputs["capex_pct"])  # CapEx / revenue (from actuals)
     nwc_pct     = float(base_inputs["nwc_pct"])    # Operating NWC level / revenue (from BS)
 
     cash0   = float(base_inputs["cash"])
     debt0   = float(base_inputs["total_debt"])
+    mc0     = float(base_inputs.get("market_cap", 0.0) or 0.0)
     ppe0    = float(base_inputs["net_ppe"]) if base_inputs["net_ppe"] is not None else 0.0
 
-    # Derive a PPE-based depreciation rate from actuals:
-    # dep_rate = D&A_actual / PPE_actual  (how fast the existing base depreciates)
-    # Fallback: use da_rev_pct * rev0 / ppe0, or just da_rev_pct if ppe0 == 0.
+    # Calendar year labels
+    base_year = base_inputs.get("base_year", None)
+    if base_year is None:
+        base_year = 2024  # sensible fallback
+
+    # Depreciation rate from actuals (D&A / opening PPE)
     if ppe0 > 0 and rev0 > 0:
         da_actual = da_rev_pct * rev0
-        dep_rate = da_actual / ppe0
-        # Clamp to a sane range (1% - 40% per year)
-        dep_rate = float(np.clip(dep_rate, 0.01, 0.40))
+        dep_rate = float(np.clip(da_actual / ppe0, 0.01, 0.40))
     else:
-        dep_rate = da_rev_pct  # fallback: treat as % of revenue implicitly
+        dep_rate = da_rev_pct
 
-    # Opening NWC level from balance sheet (Year 0)
-    nwc0 = nwc_pct * rev0  # consistent with the ratio we stored
+    # Target leverage ratio: D / (D + E), anchored to opening balance sheet.
+    # Use market cap for E if available; otherwise equity = total assets approx.
+    E0 = max(mc0, 0.0)
+    D0 = max(debt0, 0.0)
+    denom0 = E0 + D0
+    if denom0 > 0:
+        target_wD = D0 / denom0
+    else:
+        target_wD = 0.30  # fallback: 30% debt
+    # Clamp to a sensible range
+    target_wD = float(np.clip(target_wD, 0.05, 0.80))
+
+    # Opening NWC level
+    nwc0 = nwc_pct * rev0
 
     rows_is  = []
     rows_bs  = []
     rows_cf  = []
     rows_fcf = []
 
-    rev_prev      = rev0
-    ppe_prev      = ppe0
+    rev_prev       = rev0
+    ppe_prev       = ppe0
     nwc_level_prev = nwc0
-    cash          = cash0
-    debt          = debt0
+    # For the balance sheet display we track debt; cash is held at a minimum
+    # operating level (use opening cash ratio to revenue as target).
+    min_cash_pct = cash0 / rev0 if rev0 > 0 else 0.02
+    debt = debt0
 
     for y in range(1, horizon_years + 1):
+        cal_year = base_year + y
+
         # --- Income statement ---
         rev   = rev_prev * (1.0 + rev_growth)
         ebit  = rev * ebit_margin
         tax   = max(ebit, 0.0) * tax_rate
         nopat = ebit - tax
 
-        # D&A driven by beginning-of-year PPE (asset-base approach)
-        # For the first forecast year ppe_prev == ppe0 (actuals), which is correct.
+        # D&A on opening PPE
         da = dep_rate * ppe_prev
 
-        # CapEx as % of revenue (drives asset base growth)
+        # CapEx as % of revenue
         capex_spend = rev * capex_pct
 
-        # PPE roll-forward: open + capex - depreciation
+        # PPE roll-forward
         ppe_curr = ppe_prev + capex_spend - da
 
-        # Operating NWC level as % of revenue; delta hits FCF
+        # NWC delta
         nwc_level = rev * nwc_pct
         delta_nwc = nwc_level - nwc_level_prev
 
-        # Unlevered FCF
+        # Unlevered FCF (distributed to all capital providers — no cash accumulation)
         fcf_u = nopat + da - capex_spend - delta_nwc
 
-        # Cash plug: accumulate FCF into cash; borrow if needed
-        cash_before_fin = cash + fcf_u
-        other_fin_plug = 0.0
-        if cash_before_fin < 0:
-            other_fin_plug = -cash_before_fin
-            debt += other_fin_plug
-            cash = 0.0
-        else:
-            cash = cash_before_fin
+        # --- Capital structure: maintain target leverage on EV proxy ---
+        # Approximate EV each year as PPE + NWC (operating asset base).
+        # Target debt = target_wD * operating_assets.
+        operating_assets = max(ppe_curr + nwc_level, 0.0)
+        target_debt = target_wD * operating_assets
+        debt_change = target_debt - debt   # positive = new borrowing, negative = repayment
+        debt_issued = max(debt_change, 0.0)
+        debt_repaid = max(-debt_change, 0.0)
+        debt = target_debt
+
+        # Operating cash balance: keep at minimum cash target (not FCF accumulation).
+        # FCF and net debt proceeds go to equity holders (dividends/buybacks).
+        cash = min_cash_pct * rev
+
+        # Net debt / financing flow for the cash flow statement
+        net_debt_cf = debt_issued - debt_repaid   # net cash from financing
 
         rows_is.append({
-            "Year": y,
+            "Year": str(cal_year),
             "Revenue": rev,
             "EBIT": ebit,
             "EBIT margin": ebit / rev if rev != 0 else None,
@@ -766,25 +799,25 @@ def build_forecast(base_inputs, horizon_years=5):
             "D&A": da,
         })
         rows_bs.append({
-            "Year": y,
+            "Year": str(cal_year),
             "Cash": cash,
             "Net PPE": ppe_curr,
             "NWC (level)": nwc_level,
             "Debt": debt,
-            "Other Financing Plug": other_fin_plug,
+            "Net Debt Change": debt_change,
         })
         rows_cf.append({
-            "Year": y,
+            "Year": str(cal_year),
             "NOPAT": nopat,
             "D&A": da,
             "CapEx (spend)": capex_spend,
             "Delta NWC": delta_nwc,
             "Unlevered FCF": fcf_u,
-            "Other Financing Plug": other_fin_plug,
-            "Ending Cash": cash,
+            "Net Debt Issued/(Repaid)": net_debt_cf,
+            "To Equity (FCF + net debt)": fcf_u + net_debt_cf,
         })
         rows_fcf.append({
-            "Year": y,
+            "Year": str(cal_year),
             "Unlevered FCF": fcf_u,
         })
 

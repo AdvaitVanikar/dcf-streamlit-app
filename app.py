@@ -99,14 +99,24 @@ if run:
         st.info("Assumptions summary not available.")
 
     # FORECAST TABLES
+    def show_forecast(df, decimals=2):
+        """Display with Year as index so it acts as a row header."""
+        d = df.copy()
+        if "Year" in d.columns:
+            d = d.set_index("Year")
+        for c in d.columns:
+            if pd.api.types.is_numeric_dtype(d[c]):
+                d[c] = d[c].map(lambda v: "" if pd.isna(v) else f"{v:,.{decimals}f}")
+        return d
+
     st.subheader("Forecast Income Statement")
-    st.table(pretty_df(res["df_is"], decimals=2))
+    st.table(show_forecast(res["df_is"]))
 
     st.subheader("Forecast Balance Sheet")
-    st.table(pretty_df(res["df_bs"], decimals=2))
+    st.table(show_forecast(res["df_bs"]))
 
     st.subheader("Forecast Cash Flow")
-    st.table(pretty_df(res["df_cf"], decimals=2))
+    st.table(show_forecast(res["df_cf"]))
 
     st.subheader("DCF Bridge")
     st.table(pretty_df(res["bridge"], decimals=2))
