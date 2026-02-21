@@ -10,7 +10,7 @@ import math
 import json
 import pickle
 from datetime import datetime
-
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -38,7 +38,7 @@ default_da_pct_revenue = 0.03
 default_capex_pct_revenue = 0.04
 default_nwc_pct_revenue = 0.00
 balancing_method = "cash_plug"
-output_dir = "/content/model_outputs"
+output_dir = "/tmp/model_outputs"
 USE_CACHE = True
 
 # -----------------------------
@@ -101,7 +101,20 @@ def fmt_pct(x, nd=2):
         return f"{v*100:.{nd}f}%"
     except Exception:
         return "NA"
-
+def _clean_float(x):
+    try:
+        if x is None:
+            return None
+        if isinstance(x, str):
+            x = x.strip()
+            if x == "":
+                return None
+        v = float(x)
+        if not np.isfinite(v):
+            return None
+        return v
+    except Exception:
+        return None
 def df_to_pretty(df, money_cols=None, pct_cols=None, num_cols=None):
     if df is None or getattr(df, "empty", True):
         return df
@@ -1134,7 +1147,7 @@ def plot_revenue_scenarios(rev_paths, ticker):
 # -----------------------------
 # Report
 # -----------------------------
-def handle_report(ticker):
+def handle_report(ticker, user_inputs=None):
     ensure_output_dir()
 
     # ASOF prices
@@ -1181,20 +1194,96 @@ def handle_report(ticker):
         wacc_info = compute_wacc(base_inputs, rf, erp)
         save_cache(ticker, {"ticker": ticker, "asof": ASOF_DATE, "base_inputs": base_inputs, "erp": erp, "wacc_info": wacc_info})
 
-    base_wacc = wacc_info.get("wacc", None)
-    if base_wacc is None or (isinstance(base_wacc, float) and (math.isnan(base_wacc) or math.isinf(base_wacc))):
-        base_wacc = wacc_default
-        print("UserWarning: Using default wacc=%s (source unavailable)." % str(base_wacc))
+    # -----------------------------
+    # USER INPUT OVERRIDES (Streamlit)
+    # -----------------------------
+    user_inputs = user_inputs or {}
 
-    base_g = terminal_growth_default
-    print("UserWarning: Using default terminal_growth=%s (source unavailable)." % str(base_g))
+    # terminal g
+    ug = _clean_float(user_inputs.get("terminal_g"))
+    if ug is not None:
+        base_g = ug
+        print("UserInput: terminal_growth=%s" % str(base_g))
+    else:
+        base_g = terminal_growth_default
+        print("UserWarning: Using default terminal_growth=%s (source unavailable)." % str(base_g))
 
-    print("\n--- Market inputs ---")
-    print("Risk-free (from ^TNX): %s" % fmt_pct(rf, 2))
-    print("ERP (Damodaran best-effort): %s" % fmt_pct(erp, 2))
-    print("Beta (Yahoo): %s" % fmt_num(base_inputs["beta"], 2))
-    print("Cost of equity: %s" % fmt_pct(wacc_info["cost_equity"], 2))
-    print("WACC: %s (wE=%s, wD=%s)" % (fmt_pct(base_wacc, 2), fmt_pct(wacc_info["wE"], 2), fmt_pct(wacc_info["wD"], 2)))
+    # rf override
+    urf = _clean_float(user_inputs.get("rf"))
+    if urf is not None:
+        rf = urf
+        print("UserInput: rf=%s" % str(rf))
+
+    # erp override
+    uerp = _clean_float(user_inputs.get("erp"))
+    if uerp is not None:
+        erp = uerp
+        print("UserInput: erp=%s" % str(erp))
+
+    # beta override
+    ubeta = _clean_float(user_inputs.get("beta"))
+    if ubeta is not None:
+        base_inputs["beta"] = float(ubeta)
+        print("UserInput: beta=%s" % str(base_inputs["beta"]))
+
+    # cost of debt override
+    ucod = _clean_float(user_inputs.get("cost_debt"))
+    if ucod is not None:
+        base_inputs["cost_debt"] = float(ucod)
+        print("UserInput: cost_of_debt=%s" % str(base_inputs["cost_debt"]))
+
+    # cost of equity override (if user gives directly)
+    ucoe = _clean_float(user_inputs.get("cost_equity"))
+
+    # weight of debt override
+    uwD = _clean_float(user_inputs.get("wD"))
+    if uwD is not None:
+        uwD = float(np.clip(uwD, 0.0, 1.0))
+        wD_user = uwD
+        print("UserInput: wD=%s" % str(wD_user))
+    else:
+        wD_user = None
+
+    # -----------------------------
+    # WACC (computed using USED inputs)
+    # -----------------------------
+    tax_rate = float(base_inputs["tax_rate"])
+    cost_debt_val = float(base_inputs["cost_debt"])
+
+    if ucoe is not None:
+        cost_equity_val = float(ucoe)
+        print("UserInput: cost_of_equity=%s" % str(cost_equity_val))
+    else:
+        cost_equity_val = rf + float(base_inputs["beta"]) * erp
+
+    # weights
+    if wD_user is not None:
+        wD_val = float(wD_user)
+        wE_val = 1.0 - wD_val
+    else:
+        E = max(float(base_inputs.get("market_cap", 0.0) or 0.0), 0.0)
+        D = max(float(base_inputs.get("total_debt", 0.0) or 0.0), 0.0)
+        denom = E + D
+        if denom <= 0:
+            wE_val = 0.9
+            wD_val = 0.1
+            print("UserWarning: Using default capital weights (source unavailable).")
+        else:
+            wE_val = E / denom
+            wD_val = D / denom
+
+    base_wacc = wE_val * cost_equity_val + wD_val * cost_debt_val * (1.0 - tax_rate)
+
+    print("\n--- Market inputs (USED) ---")
+    print("Risk-free (rf): %s" % fmt_pct(rf, 2))
+    print("ERP: %s" % fmt_pct(erp, 2))
+    print("Beta: %s" % fmt_num(base_inputs["beta"], 2))
+    print("Cost of equity: %s" % fmt_pct(cost_equity_val, 2))
+    print("Cost of debt: %s" % fmt_pct(cost_debt_val, 2))
+    print("Weights: wE=%s, wD=%s" % (fmt_pct(wE_val, 2), fmt_pct(wD_val, 2)))
+    print("WACC: %s" % fmt_pct(base_wacc, 2))
+    print("Terminal g: %s" % fmt_pct(base_g, 2))
+
 
     # Forecast model outputs
     df_is, df_bs, df_cf, df_fcf = build_forecast(base_inputs, horizon_years=forecast_horizon_years)
