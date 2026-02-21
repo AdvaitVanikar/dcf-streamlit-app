@@ -1,53 +1,44 @@
 import streamlit as st
 import io
-import contextlib
+from contextlib import redirect_stdout
 
-import model_core
+import model_core  # <-- this must match your big file name (without .py)
 
-st.set_page_config(page_title="DCF App", layout="wide")
+st.set_page_config(page_title="DCF Valuation App", layout="wide")
 st.title("DCF Valuation App")
 
-with st.sidebar:
-    st.header("Inputs")
-    ticker = st.text_input("Ticker", value="PRS.MC")
+ticker = st.text_input("Ticker", value="PRS.MC")
 
-    st.subheader("WACC inputs (optional)")
-    cost_debt = st.text_input("Cost of debt (decimal)", value="", placeholder="e.g. 0.045")
-    cost_equity = st.text_input("Cost of equity (decimal)", value="", placeholder="e.g. 0.10")
-    wD = st.text_input("Weight of debt (0-1)", value="", placeholder="e.g. 0.20")
+st.subheader("Optional overrides (leave blank to use defaults)")
 
-    st.subheader("Or use rf + ERP + beta (optional)")
-    rf = st.text_input("Risk-free rf (decimal)", value="", placeholder="blank = Yahoo ^TNX")
-    erp = st.text_input("Equity risk premium ERP (decimal)", value="", placeholder="blank = Damodaran/default")
-    beta = st.text_input("Beta", value="", placeholder="blank = Yahoo")
+c1, c2, c3 = st.columns(3)
+with c1:
+    rf = st.text_input("Risk-free rate (rf) e.g. 0.04", value="")
+    erp = st.text_input("Equity risk premium (ERP) e.g. 0.05", value="")
+with c2:
+    beta = st.text_input("Beta e.g. 1.0", value="")
+    cost_debt = st.text_input("Cost of debt e.g. 0.045", value="")
+with c3:
+    cost_equity = st.text_input("Cost of equity (optional) e.g. 0.09", value="")
+    wD = st.text_input("Weight of debt (wD) 0-1 e.g. 0.30", value="")
 
-    st.subheader("Terminal")
-    terminal_g = st.text_input("Terminal growth g (decimal)", value="", placeholder="e.g. 0.025")
+terminal_g = st.text_input("Terminal growth (g) e.g. 0.025", value="")
 
-    run = st.button("Run DCF")
+if st.button("Run DCF"):
+    user_inputs = {
+        "rf": rf,
+        "erp": erp,
+        "beta": beta,
+        "cost_debt": cost_debt,
+        "cost_equity": cost_equity,
+        "wD": wD,
+        "terminal_g": terminal_g,
+    }
 
-if run:
-    if not ticker.strip():
-        st.warning("Please enter a ticker.")
-    else:
-        st.info("Running model...")
+    # Capture print() output from model into Streamlit
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        model_core.handle_report(ticker.strip(), user_inputs=user_inputs)
 
-        user_inputs = {
-            "cost_debt": cost_debt,
-            "cost_equity": cost_equity,
-            "wD": wD,
-            "rf": rf,
-            "erp": erp,
-            "beta": beta,
-            "terminal_g": terminal_g,
-        }
-
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            model_core.handle_report(ticker.strip(), user_inputs=user_inputs)
-
-        output_text = buffer.getvalue()
-
-        st.subheader("Model Output")
-        with st.expander("Show full output", expanded=True):
-            st.text(output_text)
+    st.subheader("Model Output")
+    st.code(buf.getvalue())
