@@ -529,16 +529,17 @@ def compute_base_inputs(ticker):
         capex_pct = default_capex_pct_revenue
         print("UserWarning: Using default capex_pct_revenue=%s (source unavailable)." % str(capex_pct))
 
+    # nwc_pct = operating NWC level as % of revenue (from BS, not CF delta)
+    # Operating NWC = (current assets - cash) - current liabilities
     nwc_pct = None
-    if revenue is not None and revenue != 0 and dnwc is not None:
-        nwc_pct = float(dnwc) / float(revenue)
+    if current_assets is not None and current_liab is not None and revenue is not None and float(revenue) != 0:
+        try:
+            op_nwc = float(current_assets) - float(cash if cash is not None else 0.0) - float(current_liab)
+            nwc_pct = op_nwc / float(revenue)
+        except Exception:
+            nwc_pct = None
     if nwc_pct is None:
-        # try derive from BS (NWC level proxy -> delta approx 0)
-        if current_assets is not None and current_liab is not None and revenue is not None and revenue != 0:
-            # level NWC as % revenue (not delta) -> use 0 delta assumption
-            nwc_pct = default_nwc_pct_revenue
-        else:
-            nwc_pct = default_nwc_pct_revenue
+        nwc_pct = default_nwc_pct_revenue
         print("UserWarning: Using default nwc_pct_revenue=%s (source unavailable)." % str(nwc_pct))
 
     # Market inputs
@@ -665,71 +666,95 @@ def compute_wacc(base_inputs, rf, erp):
 # Forecast model (IS/BS/CF) + FCF
 # -----------------------------
 def build_forecast(base_inputs, horizon_years=5):
+    """
+    Correct forecast architecture:
+    - Year 0 = last actuals (base): revenue, PPE, NWC all taken from historical data.
+    - Years 1..N = forecast years: revenue grows from prior year; D&A is driven by
+      beginning-of-year PPE (not flat % of current revenue) so the asset base
+      compounds correctly; CapEx as % of revenue drives PPE; NWC is a level ratio
+      of revenue derived from the balance sheet, with delta hitting FCF.
+    - The opening cash (Year 0) is preserved separately for use in the DCF bridge.
+      Forecast cash accumulates FCF but is NOT used in the equity bridge (opening
+      cash is the correct bridge input, consistent with standard DCF convention).
+    """
     rev0 = base_inputs["revenue"]
     if rev0 is None or not np.isfinite(rev0) or float(rev0) <= 0:
         rev0 = 1.0
         print("UserWarning: Using default revenue=%s (source unavailable)." % str(rev0))
+    rev0 = float(rev0)
 
-    rev_growth = float(base_inputs["rev_growth"])
+    rev_growth  = float(base_inputs["rev_growth"])
     ebit_margin = float(base_inputs["ebit_margin"])
-    tax_rate = float(base_inputs["tax_rate"])
-    da_pct = float(base_inputs["da_pct"])
-    capex_pct = float(base_inputs["capex_pct"])
-    nwc_pct = float(base_inputs["nwc_pct"])
+    tax_rate    = float(base_inputs["tax_rate"])
+    # da_pct is stored as D&A / revenue from actuals; we use it as a ratio of
+    # beginning PPE to get a depreciation rate, then apply that rate to the
+    # rolling PPE balance so the asset base compounds properly.
+    da_rev_pct  = float(base_inputs["da_pct"])     # D&A / revenue (from actuals)
+    capex_pct   = float(base_inputs["capex_pct"])  # CapEx / revenue (from actuals)
+    nwc_pct     = float(base_inputs["nwc_pct"])    # Operating NWC level / revenue (from BS)
 
-    cash0 = float(base_inputs["cash"])
-    debt0 = float(base_inputs["total_debt"])
-    ppe0 = base_inputs["net_ppe"]
-    if ppe0 is None:
-        ppe0 = 0.0
+    cash0   = float(base_inputs["cash"])
+    debt0   = float(base_inputs["total_debt"])
+    ppe0    = float(base_inputs["net_ppe"]) if base_inputs["net_ppe"] is not None else 0.0
 
-    nwc0 = 0.0
-    if base_inputs.get("current_assets", None) is not None and base_inputs.get("current_liab", None) is not None:
-        try:
-            ca = float(base_inputs["current_assets"])
-            cl = float(base_inputs["current_liab"])
-            nwc0 = ca - cash0 - cl
-        except Exception:
-            nwc0 = 0.0
+    # Derive a PPE-based depreciation rate from actuals:
+    # dep_rate = D&A_actual / PPE_actual  (how fast the existing base depreciates)
+    # Fallback: use da_rev_pct * rev0 / ppe0, or just da_rev_pct if ppe0 == 0.
+    if ppe0 > 0 and rev0 > 0:
+        da_actual = da_rev_pct * rev0
+        dep_rate = da_actual / ppe0
+        # Clamp to a sane range (1% - 40% per year)
+        dep_rate = float(np.clip(dep_rate, 0.01, 0.40))
+    else:
+        dep_rate = da_rev_pct  # fallback: treat as % of revenue implicitly
 
-    years = list(range(1, horizon_years + 1))
-    rows_is = []
-    rows_bs = []
-    rows_cf = []
+    # Opening NWC level from balance sheet (Year 0)
+    nwc0 = nwc_pct * rev0  # consistent with the ratio we stored
+
+    rows_is  = []
+    rows_bs  = []
+    rows_cf  = []
     rows_fcf = []
 
-    rev_prev = float(rev0)
-    cash = cash0
-    debt = debt0
-    ppe = float(ppe0)
-    nwc_level_prev = float(nwc0)
+    rev_prev      = rev0
+    ppe_prev      = ppe0
+    nwc_level_prev = nwc0
+    cash          = cash0
+    debt          = debt0
 
-    for y in years:
-        rev = rev_prev * (1.0 + rev_growth)
-        ebit = rev * ebit_margin
-        tax = max(ebit, 0.0) * tax_rate
+    for y in range(1, horizon_years + 1):
+        # --- Income statement ---
+        rev   = rev_prev * (1.0 + rev_growth)
+        ebit  = rev * ebit_margin
+        tax   = max(ebit, 0.0) * tax_rate
         nopat = ebit - tax
-        da = rev * da_pct
-        capex_spend = rev * capex_pct  # positive spend
-        nwc_level = rev * nwc_pct  # allow negative NWC  
+
+        # D&A driven by beginning-of-year PPE (asset-base approach)
+        # For the first forecast year ppe_prev == ppe0 (actuals), which is correct.
+        da = dep_rate * ppe_prev
+
+        # CapEx as % of revenue (drives asset base growth)
+        capex_spend = rev * capex_pct
+
+        # PPE roll-forward: open + capex - depreciation
+        ppe_curr = ppe_prev + capex_spend - da
+
+        # Operating NWC level as % of revenue; delta hits FCF
+        nwc_level = rev * nwc_pct
         delta_nwc = nwc_level - nwc_level_prev
 
-        # Unlevered FCF (required definition)
+        # Unlevered FCF
         fcf_u = nopat + da - capex_spend - delta_nwc
 
-        # Cash plug + other financing plug (simple)
+        # Cash plug: accumulate FCF into cash; borrow if needed
         cash_before_fin = cash + fcf_u
         other_fin_plug = 0.0
         if cash_before_fin < 0:
-            # borrow to keep cash at zero
             other_fin_plug = -cash_before_fin
             debt += other_fin_plug
             cash = 0.0
         else:
             cash = cash_before_fin
-
-        # PPE roll-forward (simple)
-        ppe = ppe + capex_spend - da
 
         rows_is.append({
             "Year": y,
@@ -743,14 +768,14 @@ def build_forecast(base_inputs, horizon_years=5):
         rows_bs.append({
             "Year": y,
             "Cash": cash,
-            "Net PPE": ppe,
+            "Net PPE": ppe_curr,
             "NWC (level)": nwc_level,
             "Debt": debt,
             "Other Financing Plug": other_fin_plug,
         })
         rows_cf.append({
             "Year": y,
-            "NOPAT": (ebit * (1.0 - tax_rate)),
+            "NOPAT": nopat,
             "D&A": da,
             "CapEx (spend)": capex_spend,
             "Delta NWC": delta_nwc,
@@ -763,12 +788,13 @@ def build_forecast(base_inputs, horizon_years=5):
             "Unlevered FCF": fcf_u,
         })
 
-        rev_prev = rev
+        rev_prev       = rev
+        ppe_prev       = ppe_curr
         nwc_level_prev = nwc_level
 
-    df_is = pd.DataFrame(rows_is)
-    df_bs = pd.DataFrame(rows_bs)
-    df_cf = pd.DataFrame(rows_cf)
+    df_is  = pd.DataFrame(rows_is)
+    df_bs  = pd.DataFrame(rows_bs)
+    df_cf  = pd.DataFrame(rows_cf)
     df_fcf = pd.DataFrame(rows_fcf)
     return df_is, df_bs, df_cf, df_fcf
 
@@ -1458,13 +1484,12 @@ def handle_report(ticker, user_inputs=None):
     # -----------------------------
     # Build assumptions summary for Streamlit display
     # -----------------------------
-    def _src(user_val, yahoo_val, default_val, is_yahoo_available):
-        """Determine source: User Input > Yahoo > Default"""
+    def _asrc(user_val, yahoo_available, label_yahoo="Yahoo Finance", label_default="Default"):
         if user_val is not None:
             return "User Input"
-        if is_yahoo_available:
-            return "Yahoo Finance"
-        return "Default"
+        if yahoo_available:
+            return label_yahoo
+        return label_default
 
     assumptions = [
         {
@@ -1475,7 +1500,7 @@ def handle_report(ticker, user_inputs=None):
         {
             "Assumption": "Equity Risk Premium (ERP)",
             "Value": fmt_pct(erp, 2),
-            "Source": "User Input" if _clean_float(user_inputs.get("erp")) is not None else ("Damodaran (web)" if cached is None or True else "Default"),
+            "Source": "User Input" if _clean_float(user_inputs.get("erp")) is not None else "Damodaran / Default",
         },
         {
             "Assumption": "Beta",
@@ -1485,12 +1510,12 @@ def handle_report(ticker, user_inputs=None):
         {
             "Assumption": "Cost of Debt",
             "Value": fmt_pct(cost_debt_val, 2),
-            "Source": "User Input" if _clean_float(user_inputs.get("cost_debt")) is not None else ("Yahoo Finance (IS/BS)" if base_inputs.get("cost_debt", 0.045) != 0.045 else "Default"),
+            "Source": "User Input" if _clean_float(user_inputs.get("cost_debt")) is not None else ("Yahoo Finance (IS/BS)" if abs(cost_debt_val - 0.045) > 1e-6 else "Default"),
         },
         {
             "Assumption": "Cost of Equity",
             "Value": fmt_pct(cost_equity_val, 2),
-            "Source": "User Input" if ucoe is not None else "Computed (CAPM)",
+            "Source": "User Input" if _clean_float(user_inputs.get("cost_equity")) is not None else "Computed (CAPM: rf + beta * ERP)",
         },
         {
             "Assumption": "Debt Weight (wD)",
@@ -1500,7 +1525,7 @@ def handle_report(ticker, user_inputs=None):
         {
             "Assumption": "WACC",
             "Value": fmt_pct(base_wacc, 2),
-            "Source": "Computed",
+            "Source": "Computed (wE*Ke + wD*Kd*(1-t))",
         },
         {
             "Assumption": "Terminal Growth (g)",
@@ -1510,17 +1535,32 @@ def handle_report(ticker, user_inputs=None):
         {
             "Assumption": "Revenue Growth",
             "Value": fmt_pct(base_inputs["rev_growth"], 2),
-            "Source": "User Input" if _clean_float(user_inputs.get("rev_growth")) is not None else ("Yahoo Finance (historical avg)" if base_inputs["rev_growth"] != default_revenue_growth else "Default"),
+            "Source": "User Input" if _clean_float(user_inputs.get("rev_growth")) is not None else ("Yahoo Finance (historical YoY)" if abs(base_inputs["rev_growth"] - default_revenue_growth) > 1e-6 else "Default"),
         },
         {
             "Assumption": "EBIT Margin",
             "Value": fmt_pct(base_inputs["ebit_margin"], 2),
-            "Source": "User Input" if _clean_float(user_inputs.get("ebit_margin")) is not None else ("Yahoo Finance (IS)" if base_inputs["ebit_margin"] != default_ebitda_margin else "Default"),
+            "Source": "User Input" if _clean_float(user_inputs.get("ebit_margin")) is not None else ("Yahoo Finance (IS)" if abs(base_inputs["ebit_margin"] - default_ebitda_margin) > 1e-6 else "Default"),
         },
         {
             "Assumption": "Tax Rate",
             "Value": fmt_pct(base_inputs["tax_rate"], 2),
-            "Source": "User Input" if _clean_float(user_inputs.get("tax_rate")) is not None else ("Yahoo Finance (IS)" if base_inputs["tax_rate"] != default_tax_rate else "Default"),
+            "Source": "User Input" if _clean_float(user_inputs.get("tax_rate")) is not None else ("Yahoo Finance (IS)" if abs(base_inputs["tax_rate"] - default_tax_rate) > 1e-6 else "Default"),
+        },
+        {
+            "Assumption": "D&A (% revenue, actuals)",
+            "Value": fmt_pct(base_inputs["da_pct"], 2),
+            "Source": "Yahoo Finance (CF stmt)" if abs(base_inputs["da_pct"] - default_da_pct_revenue) > 1e-6 else "Default",
+        },
+        {
+            "Assumption": "CapEx (% revenue, actuals)",
+            "Value": fmt_pct(base_inputs["capex_pct"], 2),
+            "Source": "Yahoo Finance (CF stmt)" if abs(base_inputs["capex_pct"] - default_capex_pct_revenue) > 1e-6 else "Default",
+        },
+        {
+            "Assumption": "NWC (% revenue, BS level)",
+            "Value": fmt_pct(base_inputs["nwc_pct"], 2),
+            "Source": "Yahoo Finance (BS)" if abs(base_inputs["nwc_pct"] - default_nwc_pct_revenue) > 1e-6 else "Default",
         },
     ]
     assumptions_df = pd.DataFrame(assumptions)
