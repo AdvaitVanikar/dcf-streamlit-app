@@ -1355,14 +1355,8 @@ def handle_report(ticker, user_inputs=None):
     )
     heatmap_fig = plot_heatmap(sens_vals, wacc_grid, g_grid, ticker)
 
+    # Sensitivity: Streamlit will display sens_table; skip terminal pretty-print (avoids pandas Series->float issues).
     print("\n--- Sensitivity (Value per share) ---")
-    sens_show = sens_table.copy()
-    for c in sens_show.columns:
-        sens_show[c] = sens_show[c].apply(
-            lambda z: "NA" if z is None or (isinstance(z, float) and (math.isnan(z) or math.isinf(z))) else f"{float(z):.2f}"
-        )
-    print(sens_show.to_string())
-
     # -----------------------------
     # Scenarios + revenue plot (ALWAYS compute; saving is optional)
     # -----------------------------
