@@ -40,7 +40,7 @@ default_nwc_pct_revenue = 0.00
 balancing_method = "cash_plug"
 output_dir = "/tmp/model_outputs"
 USE_CACHE = True
-
+SAVE_ARTIFACTS = False
 # -----------------------------
 # Helpers / formatting
 # -----------------------------
@@ -53,11 +53,8 @@ def safe_name(s):
     return s[:120] if s else "output"
 
 def ensure_output_dir():
-    try:
-        os.makedirs(output_dir, exist_ok=True)
-    except Exception:
-        pass
-    print("Saved outputs to: %s" % output_dir)
+    # Streamlit-friendly: do not create folders or print by default
+    return
 
 def fmt_money(x):
     try:
@@ -99,6 +96,16 @@ def fmt_pct(x, nd=2):
         if math.isnan(v) or math.isinf(v):
             return "NA"
         return f"{v*100:.{nd}f}%"
+    except Exception:
+        return "NA"
+def fmt_plain(x, nd=0):
+    try:
+        if x is None:
+            return "NA"
+        v = float(x)
+        if math.isnan(v) or math.isinf(v):
+            return "NA"
+        return f"{v:,.{nd}f}"
     except Exception:
         return "NA"
 def _clean_float(x):
@@ -1078,13 +1085,7 @@ def plot_heatmap(vals, wacc_grid, g_grid, ticker):
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Value per share")
     fig.tight_layout()
-    path = os.path.join(output_dir, "sens_heatmap_%s_%s.png" % (safe_name(ticker), safe_name(ASOF_DATE)))
-    try:
-        fig.savefig(path, dpi=160)
-    except Exception:
-        pass
-    plt.close(fig)
-    return path
+    return fig
 
 def scenarios(base_inputs, base_wacc, base_g):
     base = dict(base_inputs)
@@ -1136,13 +1137,7 @@ def plot_revenue_scenarios(rev_paths, ticker):
     ax.set_title("Revenue scenarios (%s)" % ticker)
     ax.legend()
     fig.tight_layout()
-    path = os.path.join(output_dir, "scenarios_revenue_%s_%s.png" % (safe_name(ticker), safe_name(ASOF_DATE)))
-    try:
-        fig.savefig(path, dpi=160)
-    except Exception:
-        pass
-    plt.close(fig)
-    return path
+    return fig
 
 # -----------------------------
 # Report
@@ -1320,7 +1315,8 @@ def handle_report(ticker, user_inputs=None):
     else:
         print("\nAs-of price: NA | DCF value per share: %s | Implied upside: NA" % (fmt_num(vps, 2) if vps is not None else "NA"))
 
-    # Save key outputs
+# Save key outputs (optional)
+if SAVE_ARTIFACTS:
     try:
         df_is.to_csv(os.path.join(output_dir, "forecast_is_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
         df_bs.to_csv(os.path.join(output_dir, "forecast_bs_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
@@ -1364,15 +1360,13 @@ def handle_report(ticker, user_inputs=None):
         out_csv.to_csv(sens_csv, index=True)
     except Exception:
         pass
-    heatmap_path = plot_heatmap(sens_vals, wacc_grid, g_grid, ticker)
+    heatmap_fig = plot_heatmap(sens_vals, wacc_grid, g_grid, ticker)
 
     print("\n--- Sensitivity (Value per share) ---")
     sens_show = sens_table.copy()
     for c in sens_show.columns:
         sens_show[c] = sens_show[c].apply(lambda z: "NA" if z is None or (isinstance(z, float) and (math.isnan(z) or math.isinf(z))) else f"{float(z):.2f}")
     print(sens_show.to_string())
-    print("\nSaved heatmap to: %s" % heatmap_path)
-    print("Saved sensitivity CSV to: %s" % sens_csv)
 
     # Scenarios
     scen_df, rev_paths = scenarios(base_inputs, float(base_wacc), float(base_g))
@@ -1381,7 +1375,7 @@ def handle_report(ticker, user_inputs=None):
         scen_df.to_csv(scen_csv, index=False)
     except Exception:
         pass
-    rev_plot_path = plot_revenue_scenarios(rev_paths, ticker)
+    revenue_fig = plot_revenue_scenarios(rev_paths, ticker)
 
     scen_show = scen_df.copy()
     scen_show["Revenue growth"] = scen_show["Revenue growth"].apply(lambda z: fmt_pct(z, 2))
@@ -1412,7 +1406,20 @@ def handle_report(ticker, user_inputs=None):
     interp.append("Use the sensitivity heatmap to understand valuation exposure to WACC and terminal growth assumptions.")
     for line in interp:
         print("- %s" % line)
-
+return {
+    "df_is": df_is,
+    "df_bs": df_bs,
+    "df_cf": df_cf,
+    "bridge": bridge,
+    "comps_df": comps_df,
+    "comp_val_df": comp_val_df,
+    "sens_table": sens_table,
+    "scen_df": scen_df,
+    "heatmap_fig": heatmap_fig,
+    "revenue_fig": revenue_fig,
+    "px": px,
+    "vps": vps,
+}
 # -----------------------------
 # Command parsing / main
 # -----------------------------
