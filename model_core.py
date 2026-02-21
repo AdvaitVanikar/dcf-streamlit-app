@@ -1145,7 +1145,9 @@ def plot_revenue_scenarios(rev_paths, ticker):
 def handle_report(ticker, user_inputs=None):
     ensure_output_dir()
 
+    # -----------------------------
     # ASOF prices
+    # -----------------------------
     used_date_px, px, ok_px = get_asof_close(ticker)
     print("ASOF requested: %s | ASOF used for %s: %s" % (ASOF_DATE, ticker, used_date_px if used_date_px else "NA"))
     if (not ok_px) or px is None:
@@ -1171,14 +1173,17 @@ def handle_report(ticker, user_inputs=None):
         rf = 0.04
         print("UserWarning: Using default rf=%s (source unavailable)." % str(rf))
 
+    # -----------------------------
+    # Cache / base inputs
+    # -----------------------------
     cached = load_cache(ticker)
-    # Check if cached data is valid and contains 'net_ppe' before using
+
     if isinstance(cached, dict) and cached.get("ticker") == ticker and cached.get("asof") == ASOF_DATE:
         base_inputs = cached.get("base_inputs", None)
         erp = cached.get("erp", None)
         wacc_info = cached.get("wacc_info", None)
         if base_inputs is None or erp is None or wacc_info is None or "net_ppe" not in base_inputs:
-            cached = None # Invalidate cache if 'net_ppe' is missing or other critical data
+            cached = None
 
     if cached is None:
         base_inputs = compute_base_inputs(ticker)
@@ -1188,6 +1193,10 @@ def handle_report(ticker, user_inputs=None):
             print("UserWarning: Using default erp=%s (source unavailable)." % str(erp))
         wacc_info = compute_wacc(base_inputs, rf, erp)
         save_cache(ticker, {"ticker": ticker, "asof": ASOF_DATE, "base_inputs": base_inputs, "erp": erp, "wacc_info": wacc_info})
+    else:
+        base_inputs = cached.get("base_inputs")
+        erp = cached.get("erp")
+        wacc_info = cached.get("wacc_info")
 
     # -----------------------------
     # USER INPUT OVERRIDES (Streamlit)
@@ -1279,8 +1288,9 @@ def handle_report(ticker, user_inputs=None):
     print("WACC: %s" % fmt_pct(base_wacc, 2))
     print("Terminal g: %s" % fmt_pct(base_g, 2))
 
-
+    # -----------------------------
     # Forecast model outputs
+    # -----------------------------
     df_is, df_bs, df_cf, df_fcf = build_forecast(base_inputs, horizon_years=forecast_horizon_years)
 
     print("\n--- Forecast: Income statement ---")
@@ -1292,12 +1302,13 @@ def handle_report(ticker, user_inputs=None):
     print("\n--- Forecast: Cash flow ---")
     print(df_to_pretty(df_cf, money_cols=["NOPAT", "D&A", "CapEx (spend)", "Delta NWC", "Unlevered FCF", "Other Financing Plug", "Ending Cash"]).to_string(index=False))
 
+    # -----------------------------
     # DCF
+    # -----------------------------
     ev, eq, vps, tv, bridge = dcf_from_fcf(base_inputs, df_fcf, float(base_wacc), float(base_g))
 
     print("\n--- DCF bridge ---")
     bridge_pretty = bridge.copy()
-    # Format: treat shares separately
     for i in range(len(bridge_pretty)):
         item = str(bridge_pretty.loc[i, "Item"])
         val = bridge_pretty.loc[i, "Value"]
@@ -1315,24 +1326,16 @@ def handle_report(ticker, user_inputs=None):
     else:
         print("\nAs-of price: NA | DCF value per share: %s | Implied upside: NA" % (fmt_num(vps, 2) if vps is not None else "NA"))
 
-# Save key outputs (optional)
-if SAVE_ARTIFACTS:
-    try:
-        df_is.to_csv(os.path.join(output_dir, "forecast_is_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-        df_bs.to_csv(os.path.join(output_dir, "forecast_bs_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-        df_cf.to_csv(os.path.join(output_dir, "forecast_cf_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-        df_fcf.to_csv(os.path.join(output_dir, "forecast_fcf_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-        bridge.to_csv(os.path.join(output_dir, "dcf_bridge_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-    except Exception:
-        pass
-
-    # Comps
+    # -----------------------------
+    # Comps (ALWAYS compute; saving is optional)
+    # -----------------------------
     comps_df, med, comp_val_df, comp_summary, peers = build_comps(ticker, base_inputs)
     print("\n--- Comps (peers) ---")
     print(df_to_pretty(comps_df, money_cols=["MarketCap", "EnterpriseValue"], num_cols=["EV/EBITDA", "EV/Sales", "P/E"]).to_string(index=False))
 
     print("\nComps medians:")
-    print("Median EV/EBITDA: %s | Median EV/Sales: %s | Median P/E: %s" % (fmt_num(med.get("EV/EBITDA", None), 2), fmt_num(med.get("EV/Sales", None), 2), fmt_num(med.get("P/E", None), 2)))
+    print("Median EV/EBITDA: %s | Median EV/Sales: %s | Median P/E: %s" %
+          (fmt_num(med.get("EV/EBITDA", None), 2), fmt_num(med.get("EV/Sales", None), 2), fmt_num(med.get("P/E", None), 2)))
 
     print("\nComps valuation (implied):")
     if comp_val_df is None or getattr(comp_val_df, "empty", True):
@@ -1341,40 +1344,29 @@ if SAVE_ARTIFACTS:
         print(df_to_pretty(comp_val_df, money_cols=["EV implied", "Equity implied"], num_cols=["Value per share"]).to_string(index=False))
 
     if comp_summary is not None:
-        print("\nComps value per share summary (low/median/high): %s / %s / %s" % (fmt_num(comp_summary["Low"], 2), fmt_num(comp_summary["Median"], 2), fmt_num(comp_summary["High"], 2)))
+        print("\nComps value per share summary (low/median/high): %s / %s / %s" %
+              (fmt_num(comp_summary["Low"], 2), fmt_num(comp_summary["Median"], 2), fmt_num(comp_summary["High"], 2)))
 
-    try:
-        comps_df.to_csv(os.path.join(output_dir, "comps_peers_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-        if comp_val_df is not None and not comp_val_df.empty:
-            comp_val_df.to_csv(os.path.join(output_dir, "comps_valuation_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
-    except Exception:
-        pass
-
-    # Sensitivity table + heatmap
-    sens_table, sens_vals, wacc_grid, g_grid = make_sensitivity_from_model(base_inputs, rf, erp, float(base_wacc), float(base_g))
-    sens_csv = os.path.join(output_dir, "sensitivity_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE)))
-    try:
-        out_csv = sens_table.copy()
-        for c in out_csv.columns:
-            out_csv[c] = pd.to_numeric(out_csv[c], errors="coerce")
-        out_csv.to_csv(sens_csv, index=True)
-    except Exception:
-        pass
+    # -----------------------------
+    # Sensitivity + heatmap (ALWAYS compute; saving is optional)
+    # -----------------------------
+    sens_table, sens_vals, wacc_grid, g_grid = make_sensitivity_from_model(
+        base_inputs, rf, erp, float(base_wacc), float(base_g)
+    )
     heatmap_fig = plot_heatmap(sens_vals, wacc_grid, g_grid, ticker)
 
     print("\n--- Sensitivity (Value per share) ---")
     sens_show = sens_table.copy()
     for c in sens_show.columns:
-        sens_show[c] = sens_show[c].apply(lambda z: "NA" if z is None or (isinstance(z, float) and (math.isnan(z) or math.isinf(z))) else f"{float(z):.2f}")
+        sens_show[c] = sens_show[c].apply(
+            lambda z: "NA" if z is None or (isinstance(z, float) and (math.isnan(z) or math.isinf(z))) else f"{float(z):.2f}"
+        )
     print(sens_show.to_string())
 
-    # Scenarios
+    # -----------------------------
+    # Scenarios + revenue plot (ALWAYS compute; saving is optional)
+    # -----------------------------
     scen_df, rev_paths = scenarios(base_inputs, float(base_wacc), float(base_g))
-    scen_csv = os.path.join(output_dir, "scenarios_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE)))
-    try:
-        scen_df.to_csv(scen_csv, index=False)
-    except Exception:
-        pass
     revenue_fig = plot_revenue_scenarios(rev_paths, ticker)
 
     scen_show = scen_df.copy()
@@ -1388,10 +1380,39 @@ if SAVE_ARTIFACTS:
 
     print("\n--- Scenarios ---")
     print(scen_show.to_string(index=False))
-    print("\nSaved revenue scenarios plot to: %s" % rev_plot_path)
-    print("Saved scenarios CSV to: %s" % scen_csv)
 
+    # -----------------------------
+    # Optional saving (ONLY if SAVE_ARTIFACTS=True)
+    # -----------------------------
+    if SAVE_ARTIFACTS:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+
+            df_is.to_csv(os.path.join(output_dir, "forecast_is_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+            df_bs.to_csv(os.path.join(output_dir, "forecast_bs_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+            df_cf.to_csv(os.path.join(output_dir, "forecast_cf_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+            df_fcf.to_csv(os.path.join(output_dir, "forecast_fcf_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+            bridge.to_csv(os.path.join(output_dir, "dcf_bridge_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+
+            comps_df.to_csv(os.path.join(output_dir, "comps_peers_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+            if comp_val_df is not None and not comp_val_df.empty:
+                comp_val_df.to_csv(os.path.join(output_dir, "comps_valuation_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE))), index=False)
+
+            sens_csv = os.path.join(output_dir, "sensitivity_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE)))
+            out_csv = sens_table.copy()
+            for c in out_csv.columns:
+                out_csv[c] = pd.to_numeric(out_csv[c], errors="coerce")
+            out_csv.to_csv(sens_csv, index=True)
+
+            scen_csv = os.path.join(output_dir, "scenarios_%s_%s.csv" % (safe_name(ticker), safe_name(ASOF_DATE)))
+            scen_df.to_csv(scen_csv, index=False)
+
+        except Exception:
+            pass
+
+    # -----------------------------
     # Interpretation (required block)
+    # -----------------------------
     print("\n--- Interpretation ---")
     interp = []
     interp.append("This model builds a 5-year forecast from the last 3 annual Yahoo statements (with defaults only where inputs are unavailable).")
@@ -1406,20 +1427,24 @@ if SAVE_ARTIFACTS:
     interp.append("Use the sensitivity heatmap to understand valuation exposure to WACC and terminal growth assumptions.")
     for line in interp:
         print("- %s" % line)
-return {
-    "df_is": df_is,
-    "df_bs": df_bs,
-    "df_cf": df_cf,
-    "bridge": bridge,
-    "comps_df": comps_df,
-    "comp_val_df": comp_val_df,
-    "sens_table": sens_table,
-    "scen_df": scen_df,
-    "heatmap_fig": heatmap_fig,
-    "revenue_fig": revenue_fig,
-    "px": px,
-    "vps": vps,
-}
+
+    # -----------------------------
+    # RETURN for Streamlit
+    # -----------------------------
+    return {
+        "df_is": df_is,
+        "df_bs": df_bs,
+        "df_cf": df_cf,
+        "bridge": bridge,
+        "comps_df": comps_df,
+        "comp_val_df": comp_val_df,
+        "sens_table": sens_table,
+        "scen_df": scen_df,
+        "heatmap_fig": heatmap_fig,
+        "revenue_fig": revenue_fig,
+        "px": px,
+        "vps": vps,
+    }
 # -----------------------------
 # Command parsing / main
 # -----------------------------
