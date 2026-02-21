@@ -53,8 +53,10 @@ def safe_name(s):
     return s[:120] if s else "output"
 
 def ensure_output_dir():
-    # Streamlit-friendly: do not create folders or print by default
-    return
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except Exception:
+        pass
 
 def fmt_money(x):
     try:
@@ -686,7 +688,7 @@ def build_forecast(base_inputs, horizon_years=5):
         try:
             ca = float(base_inputs["current_assets"])
             cl = float(base_inputs["current_liab"])
-            nwc0 = max(ca - cash0 - cl, 0.0)
+            nwc0 = ca - cash0 - cl
         except Exception:
             nwc0 = 0.0
 
@@ -709,11 +711,11 @@ def build_forecast(base_inputs, horizon_years=5):
         nopat = ebit - tax
         da = rev * da_pct
         capex_spend = rev * capex_pct  # positive spend
-        nwc_level = max(rev * max(nwc_pct, -0.5), -1e18)  # allow negative if nwc_pct negative
+        nwc_level = rev * nwc_pct  # allow negative NWC  
         delta_nwc = nwc_level - nwc_level_prev
 
         # Unlevered FCF (required definition)
-        fcf_u = (ebit * (1.0 - tax_rate)) + da - capex_spend - delta_nwc
+        fcf_u = nopat + da - capex_spend - delta_nwc
 
         # Cash plug + other financing plug (simple)
         cash_before_fin = cash + fcf_u
