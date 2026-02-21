@@ -1188,7 +1188,6 @@ def scenarios(base_inputs, base_wacc, base_g):
         d["ebit_margin"] = float(np.clip(d["ebit_margin"], -0.20, 0.50))
 
     out_rows = []
-    rev_paths = {}
     for name, inp, gg in [("Base", base, base_g), ("Bull", bull, bull_g), ("Bear", bear, bear_g)]:
         df_is, df_bs, df_cf, df_fcf = build_forecast(inp, horizon_years=forecast_horizon_years)
         ev, eq, vps, tv, bridge = dcf_from_fcf(inp, df_fcf, base_wacc, gg)
@@ -1202,25 +1201,146 @@ def scenarios(base_inputs, base_wacc, base_g):
             "Equity value": eq,
             "Enterprise value": ev,
         })
-        rev_paths[name] = df_is["Revenue"].values.astype(float)
 
     df = pd.DataFrame(out_rows)
-    return df, rev_paths
+    return df
 
-def plot_revenue_scenarios(rev_paths, ticker):
-    fig, ax = plt.subplots(figsize=(9, 5))
-    years = list(range(1, forecast_horizon_years + 1))
-    for k, v in rev_paths.items():
-        try:
-            ax.plot(years, v, label=k)
-        except Exception:
+def plot_comps_multiples(comps_df, ticker):
+    """
+    For each multiple (EV/EBITDA, EV/Sales, P/E):
+      - Vertical line from min to max across peers
+      - Dash marker at the median
+      - Individual peer dots labelled with ticker
+    """
+    multiples = ["EV/EBITDA", "EV/Sales", "P/E"]
+    available = [m for m in multiples if m in comps_df.columns]
+    if not available:
+        return None
+
+    fig, axes = plt.subplots(1, len(available), figsize=(4 * len(available), 6))
+    if len(available) == 1:
+        axes = [axes]
+
+    ACCENT   = "#2563EB"   # blue  – range line
+    MEDIAN_C = "#DC2626"   # red   – median
+    DOT_C    = "#374151"   # dark grey – peer dots
+
+    for ax, col in zip(axes, available):
+        vals = pd.to_numeric(comps_df[col], errors="coerce").dropna()
+        tickers = comps_df.loc[comps_df[col].notna(), "Ticker"].tolist() if "Ticker" in comps_df.columns else []
+
+        if vals.empty:
+            ax.set_title(col)
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
             continue
-    ax.set_xlabel("Forecast year")
-    ax.set_ylabel("Revenue")
-    ax.set_title("Revenue scenarios (%s)" % ticker)
-    ax.legend()
+
+        lo, hi, med = vals.min(), vals.max(), vals.median()
+
+        # vertical range line
+        ax.plot([0, 0], [lo, hi], color=ACCENT, linewidth=3, solid_capstyle="round", zorder=2)
+
+        # median dash
+        ax.plot([-0.12, 0.12], [med, med], color=MEDIAN_C, linewidth=3, zorder=3, solid_capstyle="round")
+        ax.text(0.18, med, "Median\n" + f"{med:.1f}x", va="center", fontsize=8,
+                color=MEDIAN_C, fontweight="bold")
+
+        # peer dots + labels
+        for v, t in zip(vals.values, tickers):
+            ax.scatter(0, v, color=DOT_C, s=40, zorder=4)
+            ax.text(0.18, v, f"{t}  {v:.1f}x", va="center", fontsize=7.5, color=DOT_C)
+
+        # min / max labels
+        ax.text(-0.22, lo, f"{lo:.1f}x", va="center", fontsize=7.5, color=ACCENT, ha="right")
+        ax.text(-0.22, hi, f"{hi:.1f}x", va="center", fontsize=7.5, color=ACCENT, ha="right")
+
+        ax.set_xlim(-0.6, 0.9)
+        margin = (hi - lo) * 0.25 if hi != lo else 1
+        ax.set_ylim(lo - margin, hi + margin)
+        ax.set_xticks([])
+        ax.set_title(col, fontsize=11, fontweight="bold", pad=10)
+        ax.set_ylabel("Multiple (x)", fontsize=9)
+        ax.spines[["top", "right", "bottom"]].set_visible(False)
+        ax.tick_params(left=True, labelleft=True)
+
+    fig.suptitle(f"Peer Multiples — {ticker}", fontsize=13, fontweight="bold", y=1.02)
     fig.tight_layout()
     return fig
+
+
+def plot_sankey(df_cf, df_is, ticker, year_idx=0):
+    """
+    Cash Flow Allocation Sankey for one forecast year.
+    Flow: Operating Cash Flow → CapEx → Debt Repayment → To Equity → Cash Increase
+    Uses matplotlib patches to draw a simplified horizontal Sankey.
+    """
+    try:
+        row_cf = df_cf.iloc[year_idx]
+        row_is = df_is.iloc[year_idx]
+        year   = df_cf.iloc[year_idx].get("Year", year_idx + 1) if hasattr(df_cf.iloc[year_idx], "get") else str(year_idx + 1)
+        # pull values safely
+        def g(row, *keys):
+            for k in keys:
+                try:
+                    v = row[k]
+                    if v is not None and np.isfinite(float(v)):
+                        return abs(float(v))
+                except Exception:
+                    pass
+            return 0.0
+
+        ocf      = g(row_cf, "NOPAT") + g(row_cf, "D&A")          # NOPAT + D&A = gross OCF
+        capex    = g(row_cf, "CapEx (spend)")
+        debt_rep = g(row_cf, "Net Debt Issued/(Repaid)")            # positive = net repaid
+        to_eq    = g(row_cf, "To Equity (FCF + net debt)")
+        fcf      = g(row_cf, "Unlevered FCF")
+
+        # Sankey nodes (left to right)
+        # We draw horizontal bars proportional to value
+        labels = ["Operating Cash Flow", "CapEx", "Debt Repayment", "To Equity (divid./buyback)"]
+        values = [ocf, capex, debt_rep, to_eq]
+        colors = ["#2563EB", "#DC2626", "#D97706", "#16A34A"]
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.set_xlim(0, len(labels))
+        ax.set_ylim(-0.5, 1.5)
+
+        bar_h = 0.55
+        bar_y = 0.5 - bar_h / 2
+        max_v = ocf if ocf > 0 else 1.0
+
+        x = 0.0
+        prev_right = None
+        for i, (lbl, val, col) in enumerate(zip(labels, values, colors)):
+            w = (val / max_v) * 0.75
+            rect = plt.Rectangle((x, bar_y), w, bar_h, color=col, alpha=0.85, zorder=3)
+            ax.add_patch(rect)
+            # arrow / connector from previous
+            if prev_right is not None:
+                ax.annotate("", xy=(x, 0.5), xytext=(prev_right, 0.5),
+                            arrowprops=dict(arrowstyle="->", color="#9CA3AF", lw=1.5))
+            # label above
+            ax.text(x + w / 2, bar_y + bar_h + 0.08, lbl,
+                    ha="center", va="bottom", fontsize=8, fontweight="bold", color=col)
+            # value below
+            scale = 1e9
+            unit  = "B"
+            if max_v < 1e9:
+                scale = 1e6
+                unit  = "M"
+            ax.text(x + w / 2, bar_y - 0.12,
+                    f"{val/scale:.1f}{unit}",
+                    ha="center", va="top", fontsize=8, color=col)
+            prev_right = x + w
+            x += 0.85   # fixed step between bars
+
+        ax.axis("off")
+        fig.suptitle(f"Cash Flow Allocation — {ticker} ({year})",
+                     fontsize=12, fontweight="bold")
+        fig.tight_layout()
+        return fig
+    except Exception as e:
+        print("Sankey plot error: %s" % str(e))
+        return None
 
 # -----------------------------
 # Report
@@ -1461,8 +1581,9 @@ def handle_report(ticker, user_inputs=None, user_peers=None):
     # -----------------------------
     # Scenarios + revenue plot (ALWAYS compute; saving is optional)
     # -----------------------------
-    scen_df, rev_paths = scenarios(base_inputs, float(base_wacc), float(base_g))
-    revenue_fig = plot_revenue_scenarios(rev_paths, ticker)
+    scen_df = scenarios(base_inputs, float(base_wacc), float(base_g))
+    multiples_fig = plot_comps_multiples(comps_df, ticker)
+    sankey_fig = plot_sankey(df_cf, df_is, ticker, year_idx=0)
 
     scen_show = scen_df.copy()
     scen_show["Revenue growth"] = scen_show["Revenue growth"].apply(lambda z: fmt_pct(z, 2))
@@ -1620,7 +1741,8 @@ def handle_report(ticker, user_inputs=None, user_peers=None):
         "sens_table": sens_table,
         "scen_df": scen_df,
         "heatmap_fig": heatmap_fig,
-        "revenue_fig": revenue_fig,
+        "multiples_fig": multiples_fig,
+        "sankey_fig": sankey_fig,
         "px": px,
         "vps": vps,
         "assumptions_df": assumptions_df,

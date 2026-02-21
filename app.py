@@ -176,9 +176,21 @@ if run:
     st.subheader("Sensitivity Heatmap")
     st.pyplot(res["heatmap_fig"])
 
+    # Comps multiples chart
+    st.subheader("Peer Multiples")
+    if res.get("multiples_fig") is not None:
+        st.pyplot(res["multiples_fig"])
+    else:
+        st.info("Not enough peer data to plot multiples.")
+
+    # Cash flow Sankey
+    st.subheader("Cash Flow Allocation")
+    st.caption("How operating cash flow is allocated in the first forecast year.")
+    if res.get("sankey_fig") is not None:
+        st.pyplot(res["sankey_fig"])
+    else:
+        st.info("Cash flow allocation chart unavailable.")
+
     # Scenarios
     st.subheader("Scenarios")
     st.table(pretty_df(res["scen_df"], decimals=2))
-
-    st.subheader("Revenue Scenarios Plot")
-    st.pyplot(res["revenue_fig"])
