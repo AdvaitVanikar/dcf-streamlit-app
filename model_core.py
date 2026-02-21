@@ -1017,9 +1017,18 @@ def pick_peers(subject_ticker, subject_info):
     print("\nPeers selected (in order): %s" % (", ".join(peers) if peers else "NA"))
     return peers
 
-def build_comps(subject_ticker, base_inputs):
+def build_comps(subject_ticker, base_inputs, user_peers=None):
+    """
+    If user_peers is a non-empty list of ticker strings, use those directly
+    instead of the auto-selected peers. Still falls back to auto-pick if the
+    list is empty or None.
+    """
     subject_info = base_inputs["info"]
-    peers = pick_peers(subject_ticker, subject_info)
+    if user_peers and len([p for p in user_peers if str(p).strip()]) > 0:
+        peers = [str(p).strip().upper() for p in user_peers if str(p).strip()]
+        print("\nUser-supplied peers: %s" % ", ".join(peers))
+    else:
+        peers = pick_peers(subject_ticker, subject_info)
 
     rows = []
     for t in peers:
@@ -1216,7 +1225,7 @@ def plot_revenue_scenarios(rev_paths, ticker):
 # -----------------------------
 # Report
 # -----------------------------
-def handle_report(ticker, user_inputs=None):
+def handle_report(ticker, user_inputs=None, user_peers=None):
     ensure_output_dir()
 
     # -----------------------------
@@ -1421,7 +1430,7 @@ def handle_report(ticker, user_inputs=None):
     # -----------------------------
     # Comps (ALWAYS compute; saving is optional)
     # -----------------------------
-    comps_df, med, comp_val_df, comp_summary, peers = build_comps(ticker, base_inputs)
+    comps_df, med, comp_val_df, comp_summary, peers = build_comps(ticker, base_inputs, user_peers=user_peers)
     print("\n--- Comps (peers) ---")
     print(df_to_pretty(comps_df, money_cols=["MarketCap", "EnterpriseValue"], num_cols=["EV/EBITDA", "EV/Sales", "P/E"]).to_string(index=False))
 
