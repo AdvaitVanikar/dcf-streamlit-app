@@ -3,7 +3,7 @@ import pandas as pd
 
 # IMPORTANT: change this to your file name (without .py)
 # Example: if your big file is dcf_model.py -> import dcf_model as model
-import dcf_model as model
+import model_core as model
 
 
 st.set_page_config(page_title="DCF App", layout="wide")
