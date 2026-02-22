@@ -115,9 +115,10 @@ def plot_comps_multiples(comps_df, ticker_label):
 
         lo, hi = vals.min(), vals.max()
         med = float(np.median(vals))
-        margin = (hi - lo) * 0.28 if hi != lo else max(abs(hi) * 0.15, 1.0)
+        span = hi - lo if hi != lo else max(abs(hi) * 0.3, 2.0)
+        margin = span * 0.30
 
-        ax.set_xlim(-0.7, 0.8)
+        ax.set_xlim(-0.85, 1.0)
         ax.set_ylim(lo - margin, hi + margin)
         ax.tick_params(left=True, labelleft=True, labelsize=8, colors="#6B7280")
         ax.set_ylabel("Multiple (x)", fontsize=8.5, color="#6B7280")
@@ -126,25 +127,37 @@ def plot_comps_multiples(comps_df, ticker_label):
         ax.plot([0, 0], [lo, hi], color=BLUE, linewidth=8,
                 solid_capstyle="round", zorder=2, alpha=0.9)
 
-        # min / max labels (left of line)
-        ax.text(-0.28, hi, f"{hi:.1f}x", va="center", ha="right",
+        # min / max labels — pushed further left to avoid clash
+        ax.text(-0.38, hi, f"{hi:.1f}x", va="center", ha="right",
                 fontsize=8, color=BLUE, fontweight="bold")
-        ax.text(-0.28, lo, f"{lo:.1f}x", va="center", ha="right",
+        ax.text(-0.38, lo, f"{lo:.1f}x", va="center", ha="right",
                 fontsize=8, color=BLUE, fontweight="bold")
 
-        # median dash on LEFT side of line
-        ax.plot([-0.22, 0.0], [med, med],
+        # median dash LEFT of line + label; nudge vertically if too close to a peer dot
+        med_label_y = med
+        for v in vals:
+            if abs(v - med) < span * 0.06:   # within 6% of span → shift label up
+                med_label_y = med + span * 0.08
+                break
+        ax.plot([-0.24, 0.0], [med, med],
                 color=RED, linewidth=3.5, zorder=5, solid_capstyle="round")
-        ax.text(-0.30, med, "Median\n" + f"{med:.1f}x",
+        ax.text(-0.40, med_label_y, "Median\n" + f"{med:.1f}x",
                 va="center", ha="right", fontsize=8,
                 color=RED, fontweight="bold", linespacing=1.4)
 
-        # peer dots + labels on RIGHT side
-        for v, t in zip(vals, tkrs):
+        # peer dots + labels on RIGHT — stagger vertically if labels overlap
+        sorted_peers = sorted(zip(vals, tkrs), key=lambda x: -x[0])
+        last_lbl_y = None
+        min_sep = span * 0.10
+        for v, t in sorted_peers:
+            lbl_y = v
+            if last_lbl_y is not None and abs(lbl_y - last_lbl_y) < min_sep:
+                lbl_y = last_lbl_y - min_sep
             ax.scatter(0.08, v, color=DOT, s=55, zorder=6,
                        edgecolors="white", linewidths=0.8)
-            ax.text(0.16, v, f"{t}  {v:.1f}x",
+            ax.text(0.18, lbl_y, f"{t}  {v:.1f}x",
                     va="center", ha="left", fontsize=7.5, color=DOT)
+            last_lbl_y = lbl_y
 
         ax.set_title(col, fontsize=11, fontweight="bold", pad=12, color="#111827")
 
@@ -159,13 +172,14 @@ def plot_valuation_bridge(base_inputs, base_wacc, base_g, base_vps, ticker_label
     if base_vps is None or not np.isfinite(float(base_vps)):
         return None
 
+    # Short display labels (no newlines — we place them below the axis via figtext)
     shocks = [
-        ("Rev Growth\n+3pp",   "rev_growth",  +0.03,  False),
-        ("EBIT Margin\n+2pp",  "ebit_margin", +0.02,  False),
-        ("WACC\n-1pp",         "_wacc",       -0.01,  True),
-        ("Terminal g\n+0.5pp", "_g",          +0.005, True),
-        ("Tax Rate\n-3pp",     "tax_rate",    -0.03,  False),
-        ("CapEx\n-1pp rev",    "capex_pct",   -0.01,  False),
+        ("Rev Growth +3pp",   "rev_growth",  +0.03,  False),
+        ("EBIT Margin +2pp",  "ebit_margin", +0.02,  False),
+        ("WACC -1pp",         "_wacc",       -0.01,  True),
+        ("Terminal g +0.5pp", "_g",          +0.005, True),
+        ("Tax Rate -3pp",     "tax_rate",    -0.03,  False),
+        ("CapEx -1pp rev",    "capex_pct",   -0.01,  False),
     ]
 
     impacts = []
@@ -188,19 +202,42 @@ def plot_valuation_bridge(base_inputs, base_wacc, base_g, base_vps, ticker_label
     n     = len(impacts)
     bar_w = 0.55
     gap   = 1.0
-    xs    = [i * gap for i in range(n + 2)]
+    # No "All Shocks" bar — just base + individual shocks
+    xs = [i * gap for i in range(n + 1)]
 
-    fig, ax = plt.subplots(figsize=(12, 6), facecolor="white")
+    fig, ax = plt.subplots(figsize=(12, 6.5), facecolor="white")
+    fig.subplots_adjust(bottom=0.18)   # extra room for x-axis labels
     ax.set_facecolor("white")
     for sp in ax.spines.values():
         sp.set_visible(False)
 
+    all_running = [base_vps]
+    running = float(base_vps)
+    for _, impact in impacts:
+        running += impact
+        all_running.append(running)
+
+    y_lo = min(min(all_running), base_vps)
+    y_hi = max(max(all_running), base_vps)
+    span = y_hi - y_lo if y_hi != y_lo else abs(base_vps) * 0.3
+    pad_top = span * 0.22
+    pad_bot = span * 0.10
+    label_y = y_lo - pad_bot * 0.6   # y position for x-axis text labels
+
+    ax.set_ylim(y_lo - pad_bot, y_hi + pad_top)
+    ax.set_xlim(-gap * 0.6, xs[-1] + gap * 0.6)
+    ax.set_xticks([])
+    ax.set_ylabel("Value per Share", fontsize=9, color="#374151")
+    ax.tick_params(left=True, labelleft=True, labelsize=8, colors="#6B7280")
+    ax.axhline(base_vps, color=BASE_C, linewidth=0.8, linestyle=":", alpha=0.4, zorder=0)
+
     # Base bar
     ax.bar(xs[0], base_vps, width=bar_w, color=BASE_C, alpha=0.88, zorder=3)
-    ax.text(xs[0], base_vps * 1.02, f"{base_vps:.1f}",
+    ax.text(xs[0], base_vps + span * 0.04, f"{base_vps:.1f}",
             ha="center", va="bottom", fontsize=9, fontweight="bold", color=BASE_C)
-    ax.text(xs[0], base_vps * -0.08, "Base\nVPS",
-            ha="center", va="top", fontsize=8.5, color="#374151", fontweight="bold")
+    ax.text(xs[0], label_y, "Base VPS",
+            ha="center", va="top", fontsize=8, color="#374151",
+            fontweight="bold", multialignment="center")
 
     running = float(base_vps)
     prev_x  = xs[0]
@@ -213,51 +250,28 @@ def plot_valuation_bridge(base_inputs, base_wacc, base_g, base_vps, ticker_label
         height = max(abs(impact), 0.001)
         ax.bar(x, height, bottom=bottom, width=bar_w, color=color, alpha=0.85, zorder=3)
 
-        # dashed connector
+        # dashed connector from previous bar top to this bar base level
         ax.plot([prev_x + bar_w / 2, x - bar_w / 2], [running, running],
                 color=GREY, linewidth=1.5, linestyle="--", zorder=1)
 
-        # value label
-        offset = abs(base_vps) * 0.02
-        lbl_y  = running + impact + (offset if impact >= 0 else -offset * 2.5)
+        # value label above/below the incremental bar
+        lbl_y = running + impact + (span * 0.04 if impact >= 0 else -span * 0.08)
         ax.text(x, lbl_y, f"{impact:+.1f}",
                 ha="center", va="bottom" if impact >= 0 else "top",
-                fontsize=8.5, fontweight="bold", color=color)
+                fontsize=9, fontweight="bold", color=color)
 
-        # x-axis label (with real newline via multiline text)
-        ax.text(x, base_vps * -0.08, label,
-                ha="center", va="top", fontsize=8, color="#374151",
-                linespacing=1.3, multialignment="center")
+        # x-axis label below the plot area
+        ax.text(x, label_y, label,
+                ha="center", va="top", fontsize=7.8, color="#374151",
+                multialignment="center")
 
         running += impact
         prev_x   = x
 
-    # Final "all shocks" bar
-    x_fin = xs[-1]
-    ax.bar(x_fin, running, width=bar_w, color=BASE_C, alpha=0.55, zorder=3,
-           edgecolor=BASE_C, linewidth=1.5)
-    ax.text(x_fin, running * 1.02, f"{running:.1f}",
-            ha="center", va="bottom", fontsize=9, fontweight="bold", color=BASE_C)
-    ax.text(x_fin, base_vps * -0.08, "All\nShocks",
-            ha="center", va="top", fontsize=8.5, color="#374151", fontweight="bold")
-
-    ax.axhline(base_vps, color=BASE_C, linewidth=0.8, linestyle=":", alpha=0.4, zorder=0)
-
-    all_vals = [base_vps, running] + [base_vps + d for _, d in impacts]
-    y_lo = min(all_vals)
-    y_hi = max(all_vals)
-    pad  = (y_hi - y_lo) * 0.25 if y_hi != y_lo else abs(y_hi) * 0.25
-    ax.set_ylim(y_lo - pad * 1.8, y_hi + pad)
-    ax.set_xlim(-gap * 0.6, xs[-1] + gap * 0.6)
-    ax.set_xticks([])
-    ax.set_ylabel("Value per Share", fontsize=9, color="#374151")
-    ax.tick_params(left=True, labelleft=True, labelsize=8, colors="#6B7280")
-
     fig.suptitle(f"Scenario Impact on Value per Share — {ticker_label}",
                  fontsize=13, fontweight="bold", color="#111827")
-    ax.set_title("Each bar = VPS change from a single driver shock, all others held constant",
+    ax.set_title("Each bar = VPS change from a single driver shock; all others held constant",
                  fontsize=8, color="#6B7280", style="italic", pad=6)
-    fig.tight_layout()
     return fig
 
 
