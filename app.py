@@ -183,13 +183,16 @@ if run:
     else:
         st.info("Not enough peer data to plot multiples.")
 
-    # Cash flow Sankey
-    st.subheader("Cash Flow Allocation")
-    st.caption("How operating cash flow is allocated in the first forecast year.")
+    # Scenario impact bridge
+    st.subheader("Scenario Impact on Value per Share")
+    st.caption(
+        "Each bar shows how much VPS changes when that single driver is shocked by a fixed amount, "
+        "holding all others constant. Green = value-additive, Red = value-destructive."
+    )
     if res.get("sankey_fig") is not None:
         st.pyplot(res["sankey_fig"])
     else:
-        st.info("Cash flow allocation chart unavailable.")
+        st.info("Scenario impact chart unavailable.")
 
     # Scenarios
     st.subheader("Scenarios")

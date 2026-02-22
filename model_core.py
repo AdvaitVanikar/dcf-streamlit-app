@@ -1208,139 +1208,233 @@ def scenarios(base_inputs, base_wacc, base_g):
 def plot_comps_multiples(comps_df, ticker):
     """
     For each multiple (EV/EBITDA, EV/Sales, P/E):
-      - Vertical line from min to max across peers
-      - Dash marker at the median
-      - Individual peer dots labelled with ticker
+      - Thick vertical blue line from min to max
+      - Red median dash on the LEFT side of the line, labelled left
+      - Peer dots on the right side with ticker + value labels
+      - Min/max values labelled at the line endpoints
     """
     multiples = ["EV/EBITDA", "EV/Sales", "P/E"]
     available = [m for m in multiples if m in comps_df.columns]
     if not available:
         return None
 
-    fig, axes = plt.subplots(1, len(available), figsize=(4 * len(available), 6))
+    fig, axes = plt.subplots(1, len(available), figsize=(4.5 * len(available), 7),
+                             facecolor="white")
     if len(available) == 1:
         axes = [axes]
 
-    ACCENT   = "#2563EB"   # blue  – range line
-    MEDIAN_C = "#DC2626"   # red   – median
-    DOT_C    = "#374151"   # dark grey – peer dots
+    BLUE     = "#2563EB"
+    RED      = "#DC2626"
+    DOT_C    = "#1F2937"
+    BG       = "#F8FAFC"
+
+    LINE_X   = 0.0          # x-position of the vertical spine
+    LEFT_LBL = -0.28        # x for median label / min-max (left side)
+    RIGHT_DOT = 0.08        # x for peer dots
+    RIGHT_LBL = 0.16        # x for peer text labels
+    MED_DASH_LEFT  = -0.22  # median dash: from here …
+    MED_DASH_RIGHT = 0.0    # … to the line itself
 
     for ax, col in zip(axes, available):
-        vals = pd.to_numeric(comps_df[col], errors="coerce").dropna()
-        tickers = comps_df.loc[comps_df[col].notna(), "Ticker"].tolist() if "Ticker" in comps_df.columns else []
+        vals_raw = pd.to_numeric(comps_df[col], errors="coerce")
+        mask     = vals_raw.notna()
+        vals     = vals_raw[mask].values
+        tkrs     = comps_df.loc[mask, "Ticker"].tolist() if "Ticker" in comps_df.columns else []
 
-        if vals.empty:
-            ax.set_title(col)
-            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_facecolor(BG)
+        for sp in ["top", "right", "bottom", "left"]:
+            ax.spines[sp].set_visible(False)
+        ax.set_xticks([])
+
+        if len(vals) == 0:
+            ax.set_title(col, fontsize=11, fontweight="bold")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes,
+                    color="#9CA3AF")
             continue
 
-        lo, hi, med = vals.min(), vals.max(), vals.median()
+        lo, hi, med = vals.min(), vals.max(), float(np.median(vals))
+        margin = (hi - lo) * 0.28 if hi != lo else max(abs(hi) * 0.15, 1.0)
 
-        # vertical range line
-        ax.plot([0, 0], [lo, hi], color=ACCENT, linewidth=3, solid_capstyle="round", zorder=2)
-
-        # median dash
-        ax.plot([-0.12, 0.12], [med, med], color=MEDIAN_C, linewidth=3, zorder=3, solid_capstyle="round")
-        ax.text(0.18, med, "Median\n" + f"{med:.1f}x", va="center", fontsize=8,
-                color=MEDIAN_C, fontweight="bold")
-
-        # peer dots + labels
-        for v, t in zip(vals.values, tickers):
-            ax.scatter(0, v, color=DOT_C, s=40, zorder=4)
-            ax.text(0.18, v, f"{t}  {v:.1f}x", va="center", fontsize=7.5, color=DOT_C)
-
-        # min / max labels
-        ax.text(-0.22, lo, f"{lo:.1f}x", va="center", fontsize=7.5, color=ACCENT, ha="right")
-        ax.text(-0.22, hi, f"{hi:.1f}x", va="center", fontsize=7.5, color=ACCENT, ha="right")
-
-        ax.set_xlim(-0.6, 0.9)
-        margin = (hi - lo) * 0.25 if hi != lo else 1
+        ax.set_xlim(-0.7, 0.8)
         ax.set_ylim(lo - margin, hi + margin)
-        ax.set_xticks([])
-        ax.set_title(col, fontsize=11, fontweight="bold", pad=10)
-        ax.set_ylabel("Multiple (x)", fontsize=9)
-        ax.spines[["top", "right", "bottom"]].set_visible(False)
-        ax.tick_params(left=True, labelleft=True)
+        ax.tick_params(left=True, labelleft=True, labelsize=8, colors="#6B7280")
+        ax.yaxis.set_label_position("left")
+        ax.set_ylabel("Multiple (x)", fontsize=8.5, color="#6B7280")
 
-    fig.suptitle(f"Peer Multiples — {ticker}", fontsize=13, fontweight="bold", y=1.02)
-    fig.tight_layout()
+        # ── thick vertical range line ──
+        ax.plot([LINE_X, LINE_X], [lo, hi], color=BLUE, linewidth=8,
+                solid_capstyle="round", zorder=2, alpha=0.9)
+
+        # ── min / max endpoint labels (on the line, left side) ──
+        ax.text(LEFT_LBL, hi, f"{hi:.1f}x", va="center", ha="right",
+                fontsize=8, color=BLUE, fontweight="bold")
+        ax.text(LEFT_LBL, lo, f"{lo:.1f}x", va="center", ha="right",
+                fontsize=8, color=BLUE, fontweight="bold")
+
+        # ── median dash on left side + label ──
+        dash_halflen = (hi - lo) * 0.03 if hi != lo else 0.3
+        ax.plot([MED_DASH_LEFT, MED_DASH_RIGHT], [med, med],
+                color=RED, linewidth=3.5, zorder=5, solid_capstyle="round")
+        ax.text(LEFT_LBL - 0.02, med,
+                "Median\n" + f"{med:.1f}x",
+                va="center", ha="right", fontsize=8,
+                color=RED, fontweight="bold", linespacing=1.4)
+
+        # ── peer dots (right side) + labels ──
+        for v, t in zip(vals, tkrs):
+            ax.scatter(RIGHT_DOT, v, color=DOT_C, s=55, zorder=6, edgecolors="white", linewidths=0.8)
+            ax.text(RIGHT_LBL, v, f"{t}  {v:.1f}x",
+                    va="center", ha="left", fontsize=7.5, color=DOT_C)
+
+        ax.set_title(col, fontsize=11, fontweight="bold", pad=12, color="#111827")
+
+    fig.suptitle(f"Peer Multiples — {ticker}", fontsize=13, fontweight="bold",
+                 color="#111827", y=1.01)
+    fig.patch.set_facecolor("white")
+    fig.tight_layout(w_pad=3)
     return fig
 
 
-def plot_sankey(df_cf, df_is, ticker, year_idx=0):
-    """
-    Cash Flow Allocation Sankey for one forecast year.
-    Flow: Operating Cash Flow → CapEx → Debt Repayment → To Equity → Cash Increase
-    Uses matplotlib patches to draw a simplified horizontal Sankey.
-    """
+def _dcf_vps(base_inputs, wacc, g):
+    """Helper: run forecast + DCF and return VPS (or None on failure)."""
     try:
-        row_cf = df_cf.iloc[year_idx]
-        row_is = df_is.iloc[year_idx]
-        year   = df_cf.iloc[year_idx].get("Year", year_idx + 1) if hasattr(df_cf.iloc[year_idx], "get") else str(year_idx + 1)
-        # pull values safely
-        def g(row, *keys):
-            for k in keys:
-                try:
-                    v = row[k]
-                    if v is not None and np.isfinite(float(v)):
-                        return abs(float(v))
-                except Exception:
-                    pass
-            return 0.0
+        _, _, _, df_fcf = build_forecast(base_inputs, horizon_years=forecast_horizon_years)
+        _, _, vps, _, _ = dcf_from_fcf(base_inputs, df_fcf, wacc, g)
+        if vps is not None and np.isfinite(float(vps)):
+            return float(vps)
+    except Exception:
+        pass
+    return None
 
-        ocf      = g(row_cf, "NOPAT") + g(row_cf, "D&A")          # NOPAT + D&A = gross OCF
-        capex    = g(row_cf, "CapEx (spend)")
-        debt_rep = g(row_cf, "Net Debt Issued/(Repaid)")            # positive = net repaid
-        to_eq    = g(row_cf, "To Equity (FCF + net debt)")
-        fcf      = g(row_cf, "Unlevered FCF")
 
-        # Sankey nodes (left to right)
-        # We draw horizontal bars proportional to value
-        labels = ["Operating Cash Flow", "CapEx", "Debt Repayment", "To Equity (divid./buyback)"]
-        values = [ocf, capex, debt_rep, to_eq]
-        colors = ["#2563EB", "#DC2626", "#D97706", "#16A34A"]
-
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.set_xlim(0, len(labels))
-        ax.set_ylim(-0.5, 1.5)
-
-        bar_h = 0.55
-        bar_y = 0.5 - bar_h / 2
-        max_v = ocf if ocf > 0 else 1.0
-
-        x = 0.0
-        prev_right = None
-        for i, (lbl, val, col) in enumerate(zip(labels, values, colors)):
-            w = (val / max_v) * 0.75
-            rect = plt.Rectangle((x, bar_y), w, bar_h, color=col, alpha=0.85, zorder=3)
-            ax.add_patch(rect)
-            # arrow / connector from previous
-            if prev_right is not None:
-                ax.annotate("", xy=(x, 0.5), xytext=(prev_right, 0.5),
-                            arrowprops=dict(arrowstyle="->", color="#9CA3AF", lw=1.5))
-            # label above
-            ax.text(x + w / 2, bar_y + bar_h + 0.08, lbl,
-                    ha="center", va="bottom", fontsize=8, fontweight="bold", color=col)
-            # value below
-            scale = 1e9
-            unit  = "B"
-            if max_v < 1e9:
-                scale = 1e6
-                unit  = "M"
-            ax.text(x + w / 2, bar_y - 0.12,
-                    f"{val/scale:.1f}{unit}",
-                    ha="center", va="top", fontsize=8, color=col)
-            prev_right = x + w
-            x += 0.85   # fixed step between bars
-
-        ax.axis("off")
-        fig.suptitle(f"Cash Flow Allocation — {ticker} ({year})",
-                     fontsize=12, fontweight="bold")
-        fig.tight_layout()
-        return fig
-    except Exception as e:
-        print("Sankey plot error: %s" % str(e))
+def plot_valuation_bridge_sankey(base_inputs, base_wacc, base_g, base_vps, ticker):
+    """
+    Waterfall / Sankey-style bridge showing how each driver moves VPS from
+    the base case.  Drivers tested (one at a time, +shock):
+      Revenue Growth  +3pp
+      EBIT Margin     +2pp
+      WACC            -1pp  (lower WACC → higher value)
+      Terminal Growth +0.5pp
+      Tax Rate        -3pp  (lower tax → higher value)
+      CapEx           -1pp of revenue (lower capex → higher FCF)
+    Each bar shows the VPS impact: green = value-additive, red = value-destructive.
+    Uses matplotlib to draw a proper flowing Sankey look with curved ribbons.
+    """
+    if base_vps is None or not np.isfinite(base_vps):
         return None
+
+    shocks = [
+        ("Rev Growth +3pp",    "rev_growth",   +0.03,  False),
+        ("EBIT Margin +2pp",   "ebit_margin",  +0.02,  False),
+        ("WACC -1pp",          "_wacc",        -0.01,  True),
+        ("Terminal g +0.5pp",  "_g",           +0.005, True),
+        ("Tax Rate -3pp",      "tax_rate",     -0.03,  False),
+        ("CapEx -1pp rev",     "capex_pct",    -0.01,  False),
+    ]
+
+    impacts = []
+    for label, key, delta, is_wacc_g in shocks:
+        inp = dict(base_inputs)
+        if is_wacc_g:
+            if key == "_wacc":
+                shocked_vps = _dcf_vps(inp, base_wacc + delta, base_g)
+            else:
+                shocked_vps = _dcf_vps(inp, base_wacc, base_g + delta)
+        else:
+            old_val = float(inp.get(key, 0.0))
+            inp[key] = old_val + delta
+            shocked_vps = _dcf_vps(inp, base_wacc, base_g)
+
+        impact = (shocked_vps - base_vps) if shocked_vps is not None else 0.0
+        impacts.append((label, impact))
+
+    # ── Drawing ──────────────────────────────────────────────────────────────
+    n = len(impacts)
+    fig, ax = plt.subplots(figsize=(11, 5.5), facecolor="white")
+    ax.set_facecolor("white")
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+
+    GREEN  = "#16A34A"
+    RED    = "#DC2626"
+    BASE_C = "#2563EB"
+    GREY   = "#E5E7EB"
+
+    bar_w  = 0.55
+    gap    = 1.0          # spacing between bars
+    y_base = 0.0          # baseline for the waterfall
+
+    xs     = [i * gap for i in range(n + 2)]   # +2 for Base and Final bars
+
+    # --- Base bar ---
+    ax.bar(xs[0], base_vps, width=bar_w, color=BASE_C, alpha=0.88, zorder=3)
+    ax.text(xs[0], base_vps + abs(base_vps) * 0.015, f"{base_vps:.1f}",
+            ha="center", va="bottom", fontsize=8.5, fontweight="bold", color=BASE_C)
+    ax.text(xs[0], -abs(base_vps) * 0.06, "Base VPS", ha="center", va="top",
+            fontsize=8, color="#374151", fontweight="bold")
+
+    running = base_vps
+    prev_x  = xs[0]
+    prev_top = base_vps
+
+    for i, (label, impact) in enumerate(impacts):
+        x = xs[i + 1]
+        color = GREEN if impact >= 0 else RED
+
+        # floating waterfall bar
+        bottom = min(running, running + impact)
+        height = abs(impact) if abs(impact) > 0 else 0.001
+        ax.bar(x, height, bottom=bottom, width=bar_w, color=color, alpha=0.85, zorder=3)
+
+        # connector ribbon from prev bar top to this bar
+        from matplotlib.patches import FancyArrowPatch
+        y_start = running
+        y_end   = running
+        ax.plot([prev_x + bar_w / 2, x - bar_w / 2], [y_start, y_end],
+                color=GREY, linewidth=1.5, zorder=1, linestyle="--")
+
+        # value label
+        label_y = running + impact + (abs(base_vps) * 0.015 if impact >= 0 else -abs(base_vps) * 0.04)
+        ax.text(x, label_y, f"{impact:+.1f}",
+                ha="center", va="bottom" if impact >= 0 else "top",
+                fontsize=8, fontweight="bold", color=color)
+
+        # x-axis label
+        ax.text(x, -abs(base_vps) * 0.06, label, ha="center", va="top",
+                fontsize=7.5, color="#374151", linespacing=1.3)
+
+        running  += impact
+        prev_x    = x
+        prev_top  = running
+
+    # --- Final bar ---
+    x_final = xs[-1]
+    ax.bar(x_final, running, width=bar_w, color=BASE_C, alpha=0.6, zorder=3,
+           linestyle="--", edgecolor=BASE_C, linewidth=1.5)
+    ax.text(x_final, running + abs(base_vps) * 0.015, f"{running:.1f}",
+            ha="center", va="bottom", fontsize=8.5, fontweight="bold", color=BASE_C)
+    ax.text(x_final, -abs(base_vps) * 0.06, "If All Applied", ha="center", va="top",
+            fontsize=8, color="#374151", fontweight="bold")
+
+    # ── axis cosmetics ──
+    all_vals = [base_vps, running] + [base_vps + d for _, d in impacts]
+    y_min = min(all_vals) * (0.85 if min(all_vals) > 0 else 1.15)
+    y_max = max(all_vals) * 1.18
+    ax.set_ylim(y_min, y_max)
+    ax.set_xlim(-gap * 0.6, xs[-1] + gap * 0.6)
+    ax.axhline(base_vps, color=BASE_C, linewidth=0.8, linestyle=":", alpha=0.5, zorder=0)
+    ax.set_xticks([])
+    ax.set_ylabel("Value per Share", fontsize=9, color="#374151")
+    ax.tick_params(left=True, labelleft=True, labelsize=8, colors="#6B7280")
+
+    fig.suptitle(f"Scenario Impact on Value per Share — {ticker}",
+                 fontsize=13, fontweight="bold", color="#111827")
+    ax.text(0.5, 1.01,
+            "Each bar shows VPS change when that single driver is shocked (all others held constant)",
+            ha="center", va="bottom", transform=ax.transAxes,
+            fontsize=8, color="#6B7280", style="italic")
+    fig.tight_layout()
+    return fig
 
 # -----------------------------
 # Report
@@ -1583,7 +1677,7 @@ def handle_report(ticker, user_inputs=None, user_peers=None):
     # -----------------------------
     scen_df = scenarios(base_inputs, float(base_wacc), float(base_g))
     multiples_fig = plot_comps_multiples(comps_df, ticker)
-    sankey_fig = plot_sankey(df_cf, df_is, ticker, year_idx=0)
+    sankey_fig = plot_valuation_bridge_sankey(base_inputs, float(base_wacc), float(base_g), vps, ticker)
 
     scen_show = scen_df.copy()
     scen_show["Revenue growth"] = scen_show["Revenue growth"].apply(lambda z: fmt_pct(z, 2))
